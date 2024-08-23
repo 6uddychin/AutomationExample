@@ -7,7 +7,11 @@ Resources:
   S3Bucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: your-s3-bucket-name
+      BucketName: !Sub "${AWS::StackName}-bucket"
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt CsvProcessingLambda.Arn
 
   # IAM Role for Lambda
   LambdaExecutionRole:
@@ -32,9 +36,7 @@ Resources:
                   - s3:PutObject
                   - s3:DeleteObject
                   - s3:ListBucket
-                Resource: 
-                  - !Sub arn:aws:s3:::${S3Bucket}
-                  - !Sub arn:aws:s3:::${S3Bucket}/*
+                Resource: !GetAtt S3Bucket.Arn
               - Effect: Allow
                 Action:
                   - secretsmanager:GetSecretValue
@@ -43,6 +45,7 @@ Resources:
                 Action:
                   - ses:SendEmail
                   - ses:SendRawEmail
+                  - ses:VerifyEmailIdentity
                 Resource: "*"
               - Effect: Allow
                 Action:
@@ -64,23 +67,60 @@ Resources:
           import pandas as pd
           from io import StringIO
           from datetime import datetime
-          
+
           s3 = boto3.client('s3')
           secrets_manager = boto3.client('secretsmanager')
           ses = boto3.client('ses')
 
+          def get_secret_value(secret_name):
+              response = secrets_manager.get_secret_value(SecretId=secret_name)
+              return response['SecretString']
+
+          SES_ARN = get_secret_value("SES_Arn")
+          INPUT_S3_BUCKET_ARN = get_secret_value("input_s3_bucket_arn")
+          ELE_EMAIL = get_secret_value("ele_email")
+          MER_EMAIL = get_secret_value("mer_email")
+
           def lambda_handler(event, context):
-              bucket_name = event['Records'][0]['s3']['bucket']['name']
+              bucket_name = INPUT_S3_BUCKET_ARN.split(':')[-1]  # Extract bucket name from ARN
               object_key = event['Records'][0]['s3']['object']['key']
               
               week_number = datetime.utcnow().isocalendar()[1]
               new_key = f"{week_number}_requested.csv"
               
               if check_file_exists(bucket_name, new_key):
-                  print(f"File {new_key} already exists for this week.")
+                  completed_key = f"{week_number}_completed.csv"
+                  s3.copy_object(Bucket=bucket_name, CopySource={'Bucket': bucket_name, 'Key': object_key}, Key=completed_key)
+                  s3.delete_object(Bucket=bucket_name, Key=object_key)
+                  
+                  requested_csv = s3.get_object(Bucket=bucket_name, Key=new_key)['Body'].read().decode('utf-8')
+                  completed_csv = s3.get_object(Bucket=bucket_name, Key=completed_key)['Body'].read().decode('utf-8')
+                  
+                  requested_df = pd.read_csv(StringIO(requested_csv))
+                  completed_df = pd.read_csv(StringIO(completed_csv))
+                  
+                  incomplete_df = requested_df[~requested_df.isin(completed_df.to_dict('l')).all(axis=1)]
+                  
+                  if not incomplete_df.empty:
+                      grouped = incomplete_df.groupby('owner')
+                      for owner, group in grouped:
+                          owner_csv = group.to_csv(index=False)
+                          owner_key = f"{week_number}_{owner}_incomplete.csv"
+                          
+                          s3.put_object(Bucket=bucket_name, Key=owner_key, Body=owner_csv)
+                          
+                          if owner.lower() == 'ele':
+                              owner_contact = ELE_EMAIL
+                          elif owner.lower() == 'merc':
+                              owner_contact = MER_EMAIL
+                          else:
+                              continue  # Skip if the owner is not recognized
+                          
+                          send_email(owner_contact, owner_key, owner_csv, bucket_name, len(group))
+                          
                   return {
                       'statusCode': 200,
-                      'body': f'File {new_key} already exists. Skipping processing.'
+                      'body': 'Successfully processed and emailed incomplete actions CSV files.'
                   }
               else:
                   s3.copy_object(Bucket=bucket_name, CopySource={'Bucket': bucket_name, 'Key': object_key}, Key=new_key)
@@ -93,6 +133,9 @@ Resources:
                   ele_dataframe = df[df['owner'].str.contains("ele", case=False, na=False)]
                   merc_dataframe = df[df['owner'].str.contains("merc", case=False, na=False)]
                   
+                  ele_row_count = len(ele_dataframe)
+                  merc_row_count = len(merc_dataframe)
+                  
                   ele_csv = ele_dataframe.to_csv(index=False)
                   merc_csv = merc_dataframe.to_csv(index=False)
                   
@@ -102,15 +145,12 @@ Resources:
                   s3.put_object(Bucket=bucket_name, Key=ele_csv_key, Body=ele_csv)
                   s3.put_object(Bucket=bucket_name, Key=merc_csv_key, Body=merc_csv)
                   
-                  ele_contact = get_secret_value("ele_contact")
-                  merc_contact = get_secret_value("merc_contact")
-                  
-                  send_email(ele_contact, ele_csv_key, ele_csv, bucket_name)
-                  send_email(merc_contact, merc_csv_key, merc_csv, bucket_name)
+                  send_email(ELE_EMAIL, ele_csv_key, ele_csv, bucket_name, ele_row_count)
+                  send_email(MER_EMAIL, merc_csv_key, merc_csv, bucket_name, merc_row_count)
                   
                   return {
                       'statusCode': 200,
-                      'body': f'Successfully processed and emailed CSV files.'
+                      'body': 'Successfully processed and emailed requested CSV files.'
                   }
 
           def check_file_exists(bucket_name, key):
@@ -120,54 +160,66 @@ Resources:
               except s3.exceptions.ClientError:
                   return False
 
-          def get_secret_value(secret_name):
-              response = secrets_manager.get_secret_value(SecretId=secret_name)
-              return response['SecretString']
+          def send_email(email, csv_key, csv_content, bucket_name, row_count):
+              html_content = f"""
+              <html>
+              <body>
+                  <p>There are {row_count} actions that need to be completed this week.</p>
+                  <p>Best regards,</p>
+                  <p>Contact your representative with any questions.</p>
+              </body>
+              </html>
+              """
 
-          def send_email(email, csv_key, csv_content, bucket_name):
               ses.send_email(
-                  Source='your-email@example.com',
+                  Source=SES_ARN,
                   Destination={'ToAddresses': [email]},
                   Message={
                       'Subject': {'Data': f'CSV Report {csv_key}'},
-                      'Body': {'Text': {'Data': f'Please find the attached CSV report.'}},
-                  },
-                  Attachments=[
-                      {
-                          'Name': csv_key,
-                          'Data': csv_content
-                      }
-                  ]
+                      'Body': {
+                          'Html': {'Data': html_content},
+                          'Text': {'Data': f"There are {row_count} actions that need to be completed this week.\n\nBest regards,\n\nContact your representative with any questions."}
+                      },
+                  }
               )
           
       Runtime: python3.9
       Timeout: 60
       MemorySize: 128
-      Events:
-        S3Event:
-          Type: S3
-          Properties:
-            Bucket: !Ref S3Bucket
-            Events: s3:ObjectCreated:*
 
-  # Secrets Manager Secrets
-  EleContactSecret:
+  # Lambda Permission to Allow S3 to Invoke the Function
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref CsvProcessingLambda
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !GetAtt S3Bucket.Arn
+
+  # Secrets Manager Secrets (for reference, assuming they are already created)
+  SESArnSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
-      Name: ele_contact
+      Name: SES_Arn
+      SecretString: arn:aws:ses:us-east-1:123456789012:identity/example.com
+
+  EleEmailSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: ele_email
       SecretString: "ele@example.com"
 
-  MercContactSecret:
+  MerEmailSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
-      Name: merc_contact
+      Name: mer_email
       SecretString: "merc@example.com"
 
-  # SES Identity (Domain or Email Address)
-  SESIdentity:
-    Type: AWS::SES::EmailIdentity
+  InputS3BucketArnSecret:
+    Type: AWS::SecretsManager::Secret
     Properties:
-      Email: "your-email@example.com"
+      Name: input_s3_bucket_arn
+      SecretString: !GetAtt S3Bucket.Arn
 
 Outputs:
   S3BucketName:
@@ -178,10 +230,13 @@ Outputs:
     Value: !Ref CsvProcessingLambda
     Description: Name of the Lambda function created
 
-  EleContactSecretARN:
-    Value: !Ref EleContactSecret
-    Description: ARN of the ele_contact secret
+  SESArnSecretARN:
+    Value: !Ref SESArnSecret
+    Description: ARN of the SES ARN secret
 
-  MercContactSecretARN:
-    Value: !Ref MercContactSecret
-    Description: ARN of the merc_contact secret
+  EleEmailSecretARN:
+    Value: !Ref EleEmailSecret
+    Description: ARN of the ele_email secret
+
+  MerEmailSecretARN:
+    Value: !Ref MerEmailSecret
