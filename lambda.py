@@ -3,12 +3,24 @@ import pandas as pd
 from io import StringIO
 from datetime import datetime
 
+# Initialize AWS clients
 s3 = boto3.client('s3')
 secrets_manager = boto3.client('secretsmanager')
 ses = boto3.client('ses')
 
+# Retrieve the necessary secrets from Secrets Manager
+def get_secret_value(secret_name):
+    response = secrets_manager.get_secret_value(SecretId=secret_name)
+    return response['SecretString']
+
+# Retrieve SES ARN and bucket ARN from Secrets Manager
+SES_ARN = get_secret_value("SES_Arn")
+INPUT_S3_BUCKET_ARN = get_secret_value("input_s3_bucket_arn")
+ELE_EMAIL = get_secret_value("ele_email")
+MER_EMAIL = get_secret_value("mer_email")
+
 def lambda_handler(event, context):
-    bucket_name = event['Records'][0]['s3']['bucket']['name']
+    bucket_name = INPUT_S3_BUCKET_ARN.split(':')[-1]  # Extract bucket name from ARN
     object_key = event['Records'][0]['s3']['object']['key']
     
     week_number = datetime.utcnow().isocalendar()[1]
@@ -39,8 +51,13 @@ def lambda_handler(event, context):
                 
                 s3.put_object(Bucket=bucket_name, Key=owner_key, Body=owner_csv)
                 
-                # Get the corresponding email from Secrets Manager
-                owner_contact = get_secret_value(f"{owner}_contact")
+                # Get the corresponding email from Secrets Manager based on the owner
+                if owner.lower() == 'ele':
+                    owner_contact = ELE_EMAIL
+                elif owner.lower() == 'merc':
+                    owner_contact = MER_EMAIL
+                else:
+                    continue  # Skip if the owner is not recognized
                 
                 # Send the email with the CSV attachment
                 send_email(owner_contact, owner_key, owner_csv, bucket_name, len(group))
@@ -73,11 +90,8 @@ def lambda_handler(event, context):
         s3.put_object(Bucket=bucket_name, Key=ele_csv_key, Body=ele_csv)
         s3.put_object(Bucket=bucket_name, Key=merc_csv_key, Body=merc_csv)
         
-        ele_contact = get_secret_value("ele_contact")
-        merc_contact = get_secret_value("merc_contact")
-        
-        send_email(ele_contact, ele_csv_key, ele_csv, bucket_name, ele_row_count)
-        send_email(merc_contact, merc_csv_key, merc_csv, bucket_name, merc_row_count)
+        send_email(ELE_EMAIL, ele_csv_key, ele_csv, bucket_name, ele_row_count)
+        send_email(MER_EMAIL, merc_csv_key, merc_csv, bucket_name, merc_row_count)
         
         return {
             'statusCode': 200,
@@ -91,10 +105,6 @@ def check_file_exists(bucket_name, key):
     except s3.exceptions.ClientError:
         return False
 
-def get_secret_value(secret_name):
-    response = secrets_manager.get_secret_value(SecretId=secret_name)
-    return response['SecretString']
-
 def send_email(email, csv_key, csv_content, bucket_name, row_count):
     html_content = f"""
     <html>
@@ -107,7 +117,7 @@ def send_email(email, csv_key, csv_content, bucket_name, row_count):
     """
 
     ses.send_email(
-        Source='your-email@example.com',
+        Source=SES_ARN,
         Destination={'ToAddresses': [email]},
         Message={
             'Subject': {'Data': f'CSV Report {csv_key}'},
