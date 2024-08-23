@@ -1,0 +1,187 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Stack to create resources for CSV report processing and email sending
+
+Resources:
+
+  # S3 Bucket
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: your-s3-bucket-name
+
+  # IAM Role for Lambda
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LambdaExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaExecutionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource: 
+                  - !Sub arn:aws:s3:::${S3Bucket}
+                  - !Sub arn:aws:s3:::${S3Bucket}/*
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  # Lambda Function
+  CsvProcessingLambda:
+    Type: AWS::Lambda::Function
+    Properties: 
+      FunctionName: CsvProcessingLambda
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import pandas as pd
+          from io import StringIO
+          from datetime import datetime
+          
+          s3 = boto3.client('s3')
+          secrets_manager = boto3.client('secretsmanager')
+          ses = boto3.client('ses')
+
+          def lambda_handler(event, context):
+              bucket_name = event['Records'][0]['s3']['bucket']['name']
+              object_key = event['Records'][0]['s3']['object']['key']
+              
+              week_number = datetime.utcnow().isocalendar()[1]
+              new_key = f"{week_number}_requested.csv"
+              
+              if check_file_exists(bucket_name, new_key):
+                  print(f"File {new_key} already exists for this week.")
+                  return {
+                      'statusCode': 200,
+                      'body': f'File {new_key} already exists. Skipping processing.'
+                  }
+              else:
+                  s3.copy_object(Bucket=bucket_name, CopySource={'Bucket': bucket_name, 'Key': object_key}, Key=new_key)
+                  s3.delete_object(Bucket=bucket_name, Key=object_key)
+                  
+                  response = s3.get_object(Bucket=bucket_name, Key=new_key)
+                  csv_content = response['Body'].read().decode('utf-8')
+                  
+                  df = pd.read_csv(StringIO(csv_content))
+                  ele_dataframe = df[df['owner'].str.contains("ele", case=False, na=False)]
+                  merc_dataframe = df[df['owner'].str.contains("merc", case=False, na=False)]
+                  
+                  ele_csv = ele_dataframe.to_csv(index=False)
+                  merc_csv = merc_dataframe.to_csv(index=False)
+                  
+                  ele_csv_key = f"{week_number}_ele_report.csv"
+                  merc_csv_key = f"{week_number}_merc_report.csv"
+                  
+                  s3.put_object(Bucket=bucket_name, Key=ele_csv_key, Body=ele_csv)
+                  s3.put_object(Bucket=bucket_name, Key=merc_csv_key, Body=merc_csv)
+                  
+                  ele_contact = get_secret_value("ele_contact")
+                  merc_contact = get_secret_value("merc_contact")
+                  
+                  send_email(ele_contact, ele_csv_key, ele_csv, bucket_name)
+                  send_email(merc_contact, merc_csv_key, merc_csv, bucket_name)
+                  
+                  return {
+                      'statusCode': 200,
+                      'body': f'Successfully processed and emailed CSV files.'
+                  }
+
+          def check_file_exists(bucket_name, key):
+              try:
+                  s3.head_object(Bucket=bucket_name, Key=key)
+                  return True
+              except s3.exceptions.ClientError:
+                  return False
+
+          def get_secret_value(secret_name):
+              response = secrets_manager.get_secret_value(SecretId=secret_name)
+              return response['SecretString']
+
+          def send_email(email, csv_key, csv_content, bucket_name):
+              ses.send_email(
+                  Source='your-email@example.com',
+                  Destination={'ToAddresses': [email]},
+                  Message={
+                      'Subject': {'Data': f'CSV Report {csv_key}'},
+                      'Body': {'Text': {'Data': f'Please find the attached CSV report.'}},
+                  },
+                  Attachments=[
+                      {
+                          'Name': csv_key,
+                          'Data': csv_content
+                      }
+                  ]
+              )
+          
+      Runtime: python3.9
+      Timeout: 60
+      MemorySize: 128
+      Events:
+        S3Event:
+          Type: S3
+          Properties:
+            Bucket: !Ref S3Bucket
+            Events: s3:ObjectCreated:*
+
+  # Secrets Manager Secrets
+  EleContactSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: ele_contact
+      SecretString: "ele@example.com"
+
+  MercContactSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: merc_contact
+      SecretString: "merc@example.com"
+
+  # SES Identity (Domain or Email Address)
+  SESIdentity:
+    Type: AWS::SES::EmailIdentity
+    Properties:
+      Email: "your-email@example.com"
+
+Outputs:
+  S3BucketName:
+    Value: !Ref S3Bucket
+    Description: Name of the S3 bucket created
+
+  LambdaFunctionName:
+    Value: !Ref CsvProcessingLambda
+    Description: Name of the Lambda function created
+
+  EleContactSecretARN:
+    Value: !Ref EleContactSecret
+    Description: ARN of the ele_contact secret
+
+  MercContactSecretARN:
+    Value: !Ref MercContactSecret
+    Description: ARN of the merc_contact secret
