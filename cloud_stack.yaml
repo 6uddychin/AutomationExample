@@ -1,6 +1,23 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: Stack to create the Lambda function and set up S3 event notifications
 
+Parameters:
+  # Parameters for existing resources
+  SESArn:
+    Type: String
+    Default: arn:aws:ses:us-east-1:280101802050:identity/ipants@me.com
+    Description: The ARN of the SES identity used for sending emails
+
+  InputS3BucketArn:
+    Type: String
+    Default: arn:aws:s3:::email-automation-receive-report-bucket
+    Description: The ARN of the S3 bucket where CSV files are added to trigger Lambda
+
+  CompareS3BucketArn:
+    Type: String
+    Default: arn:aws:s3:::email-automation-compare-report-bucket
+    Description: The ARN of the S3 bucket for comparison phase of the project
+
 Resources:
 
   # IAM Role for Lambda
@@ -25,7 +42,11 @@ Resources:
                   - s3:PutObject
                   - s3:DeleteObject
                   - s3:ListBucket
-                Resource: !Sub "${input_s3_bucket_arn}"
+                Resource: 
+                  - !Ref InputS3BucketArn
+                  - !Sub "${InputS3BucketArn}/*"
+                  - !Ref CompareS3BucketArn
+                  - !Sub "${CompareS3BucketArn}/*"
               - Effect: Allow
                 Action:
                   - secretsmanager:GetSecretValue
@@ -35,7 +56,7 @@ Resources:
                   - ses:SendEmail
                   - ses:SendRawEmail
                   - ses:VerifyEmailIdentity
-                Resource: !Sub "${SES_Arn}"
+                Resource: !Ref SESArn
               - Effect: Allow
                 Action:
                   - logs:CreateLogGroup
@@ -183,9 +204,9 @@ Resources:
       FunctionName: !Ref CsvProcessingLambda
       Action: lambda:InvokeFunction
       Principal: s3.amazonaws.com
-      SourceArn: !Sub "${input_s3_bucket_arn}"
+      SourceArn: !Ref InputS3BucketArn
 
 Outputs:
   LambdaFunctionName:
     Value: !Ref CsvProcessingLambda
-    Description: Name of the Lambda function created
+    Description: Name of the Lambda function created  
