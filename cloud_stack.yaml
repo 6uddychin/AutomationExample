@@ -1,23 +1,12 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Stack to create resources for CSV report processing and email sending
+Description: Stack to create the Lambda function and set up S3 event notifications
 
 Resources:
-
-  # S3 Bucket
-  S3Bucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketName: !Sub "${AWS::StackName}-bucket"
-      NotificationConfiguration:
-        LambdaConfigurations:
-          - Event: s3:ObjectCreated:*
-            Function: !GetAtt CsvProcessingLambda.Arn
 
   # IAM Role for Lambda
   LambdaExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: LambdaExecutionRole
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -36,7 +25,7 @@ Resources:
                   - s3:PutObject
                   - s3:DeleteObject
                   - s3:ListBucket
-                Resource: !GetAtt S3Bucket.Arn
+                Resource: !Sub "${input_s3_bucket_arn}"
               - Effect: Allow
                 Action:
                   - secretsmanager:GetSecretValue
@@ -46,7 +35,7 @@ Resources:
                   - ses:SendEmail
                   - ses:SendRawEmail
                   - ses:VerifyEmailIdentity
-                Resource: "*"
+                Resource: !Sub "${SES_Arn}"
               - Effect: Allow
                 Action:
                   - logs:CreateLogGroup
@@ -194,49 +183,9 @@ Resources:
       FunctionName: !Ref CsvProcessingLambda
       Action: lambda:InvokeFunction
       Principal: s3.amazonaws.com
-      SourceArn: !GetAtt S3Bucket.Arn
-
-  # Secrets Manager Secrets (for reference, assuming they are already created)
-  SESArnSecret:
-    Type: AWS::SecretsManager::Secret
-    Properties:
-      Name: SES_Arn
-      SecretString: arn:aws:ses:us-east-1:123456789012:identity/example.com
-
-  EleEmailSecret:
-    Type: AWS::SecretsManager::Secret
-    Properties:
-      Name: ele_email
-      SecretString: "ele@example.com"
-
-  MerEmailSecret:
-    Type: AWS::SecretsManager::Secret
-    Properties:
-      Name: mer_email
-      SecretString: "merc@example.com"
-
-  InputS3BucketArnSecret:
-    Type: AWS::SecretsManager::Secret
-    Properties:
-      Name: input_s3_bucket_arn
-      SecretString: !GetAtt S3Bucket.Arn
+      SourceArn: !Sub "${input_s3_bucket_arn}"
 
 Outputs:
-  S3BucketName:
-    Value: !Ref S3Bucket
-    Description: Name of the S3 bucket created
-
   LambdaFunctionName:
     Value: !Ref CsvProcessingLambda
     Description: Name of the Lambda function created
-
-  SESArnSecretARN:
-    Value: !Ref SESArnSecret
-    Description: ARN of the SES ARN secret
-
-  EleEmailSecretARN:
-    Value: !Ref EleEmailSecret
-    Description: ARN of the ele_email secret
-
-  MerEmailSecretARN:
-    Value: !Ref MerEmailSecret
