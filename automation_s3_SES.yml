@@ -1,0 +1,85 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template for Lambda automation using S3, SES, and Secrets Manager
+
+Resources:
+  LambdaExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: 'LambdaExecutionRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - 'lambda.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      Policies:
+        - PolicyName: 'LambdaS3SESPolicy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                Resource: 'arn:aws:s3:::your-s3-bucket-name/*'
+              - Effect: Allow
+                Action:
+                  - 'ses:SendEmail'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'secretsmanager:GetSecretValue'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: '*'
+
+  LambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      FunctionName: 'S3SESLambdaFunction'
+      Handler: 'index.lambda_handler'
+      Runtime: 'python3.9'
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: 'your-lambda-code-bucket'
+        S3Key: 'your-lambda-code.zip'
+      Timeout: 120
+      Environment:
+        Variables:
+          REGION_NAME: 'us-east-1'
+  
+  S3Bucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: 'your-s3-bucket-name'
+
+  S3BucketNotification:
+    Type: 'AWS::S3::BucketNotification'
+    Properties:
+      Bucket: !Ref S3Bucket
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: 's3:ObjectCreated:*'
+            Function: !GetAtt LambdaFunction.Arn
+
+  LambdaInvokePermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref LambdaFunction
+      Principal: 's3.amazonaws.com'
+      SourceArn: !GetAtt S3Bucket.Arn
+
+Outputs:
+  LambdaFunctionArn:
+    Description: 'ARN of the Lambda Function'
+    Value: !GetAtt LambdaFunction.Arn
+  S3BucketName:
+    Description: 'Name of the S3 Bucket'
+    Value: !Ref S3Bucket

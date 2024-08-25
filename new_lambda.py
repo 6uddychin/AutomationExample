@@ -1,0 +1,239 @@
+import boto3
+from botocore.exceptions import ClientError
+import logging
+import json
+import pandas as pd
+from datetime import datetime, date
+from io import StringIO
+
+# Setup logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+week_number = datetime.utcnow().isocalendar()[1]
+# Vendor Email - just for testing
+merc_email = ["ipants@me.com"]
+ele_email = ["ipants@me.com"]
+toAddress_recipient = "Matt"
+send_date = date.today().strftime("%B %d, %Y")
+
+s3 = boto3.client('s3')
+ses = boto3.client('ses')
+
+def get_secret_value(secret_name, region_name="us-east-1"):
+    # Create a Secrets Manager client
+    session = boto3.session.Session()
+    client = session.client(service_name='secretsmanager', region_name=region_name)
+
+    try:
+        get_secret_value_response = client.get_secret_value(SecretId=secret_name)
+        secret = get_secret_value_response['SecretString']
+        return json.loads(secret)  # Assuming the secret is stored as JSON
+    except ClientError as e:
+        logger.error(f"Unable to retrieve secret {secret_name}: {e}")
+        raise e
+
+# Fetching secrets from AWS Secrets Manager
+try:
+    secrets = get_secret_value("email_automation_secrets")
+except ClientError as e:
+    logger.error("Failed to load secrets from Secrets Manager")
+    raise e
+
+SES_ARN = secrets["SES_Arn"]
+
+def lambda_handler(event, context):
+    # Extract bucket name and object key from the event
+    bucket_name = event['Records'][0]['s3']['bucket']['name']
+    object_key = event['Records'][0]['s3']['object']['key']
+
+    # Log bucket name and object key for debugging
+    logger.info(f"Bucket Name: {bucket_name}")
+    logger.info(f"Object Key: {object_key}")
+
+    try:
+        # Read the CSV file content from S3
+        response = s3.get_object(Bucket=bucket_name, Key=object_key)
+        csv_content = response['Body'].read().decode('utf-8')
+        df = pd.read_csv(StringIO(csv_content))
+
+        # Filter rows where 'complete' is False
+        incomplete_tasks = df[df['complete'] == False]
+        incomplete_tasks_total = len(df[df['complete'] == False])
+
+        # Group by 'type' and count rows
+        grouped_data = incomplete_tasks.groupby('type').size().reset_index(name='count')
+
+        # Convert to a dictionary for easier HTML creation
+        grouped_dict = grouped_data.to_dict(orient='records')
+
+        # Send email to recipients
+        send_email("mattbryan@mattbryan.awsapps.com", merc_email, object_key, grouped_dict, incomplete_tasks_total)
+
+        logger.info(f"Email sent successfully with {object_key} attached.")
+
+        return {
+            'statusCode': 200,
+            'body': 'Successfully emailed the CSV file.'
+        }
+
+    except ClientError as e:
+        logger.error(f"Error reading or sending the file: {e}")
+        return {
+            'statusCode': 500,
+            'body': f"Error processing file: {e}"
+        }
+
+def send_email(source_email, to_email, csv_key, grouped_data, total):
+    # Create a dynamic HTML table from grouped data
+    table_rows = "".join([
+        f"<tr><td>{item['type']}</td><td>{item['count']}</td></tr>"
+        for item in grouped_data
+    ])
+
+    html_content = f"""
+    <html>
+        <head>
+            <style>
+                body {{
+                    font-family: Arial, sans-serif;
+                    background-color: #f7f7f7;
+                    color: #333333;
+                    margin: 0;
+                    padding: 0;
+                }}
+                .container {{
+                    width: 100%;
+                    max-width: 600px;
+                    margin: 0 auto;
+                    background-color: #ffffff;
+                    padding: 20px;
+                    border-radius: 8px;
+                }}
+                .header {{
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    padding-bottom: 20px;
+                    border-bottom: 2px solid #eeeeee;
+                }}
+                .header .greeting {{
+                    font-weight: bold;
+                    background-color: #f7f7f7;
+                    padding: 10px 20px;
+                    border-radius: 8px;
+                }}
+                .header .date {{
+                    font-size: 14px;
+                    color: #888888;
+                }}
+                .header+logo{{
+                    padding-top: 30px;
+                    padding-bottom: 20px;
+                    background-color: #F6F6F6
+                
+                }}
+                .main-title {{
+                    font-size: 48px;
+                    font-weight: bold;
+                    color: #333333;
+                    margin: 20px 0;
+                }}
+                .main-font {{
+                    font-size: 24px;
+                    color: #333333;
+                    margin: 02px 0;
+                }}
+                .summary-table {{
+                    width: 100%;
+                    border-collapse: collapse;
+                    margin: 20px 0;
+                }}
+                .summary-table th, .summary-table td {{
+                    padding: 10px;
+                    text-align: center;
+                    border-bottom: 1px solid #eeeeee;
+                }}
+                .summary-table th {{
+                    font-weight: bold;
+                    color: #333333;
+                }}
+                .footer {{
+                    margin-top: 20px;
+                    padding-top: 10px;
+                    border-top: 2px solid #eeeeee;
+                    text-align: center;
+                }}
+                .footer .total-actions {{
+                    display: inline-block;
+                    padding: 10px 20px;
+                    background-color: #f7f7f7;
+                    border-radius: 8px;
+                    margin-bottom: 20px;
+                    font-weight: bold;
+                }}
+                .button {{
+                    display: inline-block;
+                    padding: 10px 20px;
+                    background-color: #0f2147;
+                    color: #ffffff;
+                    text-decoration: none;
+                    border-radius: 8px;
+                    font-weight: bold;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header+logo">
+                <div><img src="https://www.hatchwise.com/wp-content/uploads/2022/08/Amazon-Logo-2000-present-1024x576.jpeg" style="height:80px;" padding="20px">
+                </div>
+                </div>
+                <div class="header">
+                    <div class="greeting">Good Morning {toAddress_recipient}</div>
+                    <div class="date">DATE {send_date}</div>
+                </div>
+                <div class="main-title">WK{week_number} Actions</div>
+                <div class="main-font">These tasks must be completed by end-of-week (EOW). You can use the button below to upload a csv file to our portal to update the status of actions.</div>
+                <table class="summary-table">
+                    <tr>
+                        <th>Type</th>
+                        <th>QTY</th>
+                    </tr>
+                    {table_rows}
+            
+                </table>
+                <div class="footer">
+                    <div class="total-actions">Total Actions To Be Complete: {total}</div>
+                    <br>
+                    <a href="http://www.smartsheet.com" class="button">Update</a>
+                </div>
+                <div>
+                
+                </div>
+
+            </div>
+        </body>
+    </html>
+    """
+
+    try:
+        ses.send_email(
+            Source=source_email,
+            Destination={'ToAddresses': to_email},  # Use the to_email list here
+            Message={
+                'Subject': {'Data': f'CSV Report {csv_key}'},
+                'Body': {
+                    'Html': {'Data': html_content},
+                    'Text': {'Data': f"There are {total} types of actions that need to be completed this week.\n\nBest regards,\n\nContact your representative with any questions."}
+                },
+            }
+        )
+        logger.info("Email sent successfully.")
+
+    except ClientError as e:
+        error_code = e.response['Error']['Code']
+        if error_code == 'MessageRejected':
+            logger.error("Email address is not verified.")
+        else:
+            logger.error(f"Failed to send email due to: {e}")
+        raise e

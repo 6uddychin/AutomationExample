@@ -1,9 +1,123 @@
-f"""
-    <html>
+<html>
+    <head>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                background-color: #f7f7f7;
+                color: #333333;
+                margin: 0;
+                padding: 0;
+            }}
+            .container {{
+                width: 100%;
+                max-width: 600px;
+                margin: 0 auto;
+                background-color: #ffffff;
+                padding: 20px;
+                border-radius: 8px;
+            }}
+            .header {{
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding-bottom: 20px;
+                border-bottom: 2px solid #eeeeee;
+            }}
+            .header .greeting {{
+                font-weight: bold;
+                background-color: #f7f7f7;
+                padding: 10px 20px;
+                border-radius: 8px;
+            }}
+            .header .date {{
+                font-size: 14px;
+                color: #888888;
+            }}
+            .header+logo{{
+                padding-top: 30px;
+                padding-bottom: 20px;
+                background-color: #F6F6F6
+            
+            }}
+            .main-title {{
+                font-size: 48px;
+                font-weight: bold;
+                color: #333333;
+                margin: 20px 0;
+            }}
+            .main-font {{
+                font-size: 24px;
+                color: #333333;
+                margin: 02px 0;
+            }}
+            .summary-table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin: 20px 0;
+            }}
+            .summary-table th, .summary-table td {{
+                padding: 10px;
+                text-align: center;
+                border-bottom: 1px solid #eeeeee;
+            }}
+            .summary-table th {{
+                font-weight: bold;
+                color: #333333;
+            }}
+            .footer {{
+                margin-top: 20px;
+                padding-top: 10px;
+                border-top: 2px solid #eeeeee;
+                text-align: center;
+            }}
+            .footer .total-actions {{
+                display: inline-block;
+                padding: 10px 20px;
+                background-color: #f7f7f7;
+                border-radius: 8px;
+                margin-bottom: 20px;
+                font-weight: bold;
+            }}
+            .button {{
+                display: inline-block;
+                padding: 10px 20px;
+                background-color: #0f2147;
+                color: #ffffff;
+                text-decoration: none;
+                border-radius: 8px;
+                font-weight: bold;
+            }}
+        </style>
+    </head>
     <body>
-        <p>There are {row_count} actions that need to be completed this week.</p>
-        <p>Best regards,</p>
-        <p>Contact your representative with any questions.</p>
+        <div class="container">
+            <div class="header+logo">
+            <div><img src="https://www.hatchwise.com/wp-content/uploads/2022/08/Amazon-Logo-2000-present-1024x576.jpeg" style="height:80px;" padding="20px">
+            </div>
+            </div>
+            <div class="header">
+                <div class="greeting">Good Morning {toAddress_recipient}</div>
+                <div class="date">DATE {send_date}</div>
+            </div>
+            <div class="main-title">WK{week_number} Actions</div>
+            <div class="main-font">These tasks must be completed by end-of-week (EOW). You can use the button below to upload a csv file to our portal to update the status of actions.</div>
+            <table class="summary-table">
+                <tr>
+                    <th>Type</th>
+                    <th>QTY</th>
+                </tr>
+                {table_rows}
+        
+            </table>
+            <div class="footer">
+                <div class="total-actions">Total Actions To Be Complete: {total}</div>
+                <br>
+                <a href="http://www.smartsheet.com" class="button">Update</a>
+            </div>
+            <div>
+            
+            </div>
+
+        </div>
     </body>
-    </html>
-    """
+</html>
