@@ -11,8 +11,8 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 week_number = datetime.utcnow().isocalendar()[1]
 # Vendor Email - just for testing
-merc_email = ["ipants@me.com"]
-ele_email = ["ipants@me.com"]
+merc_email = ["EMAIL_FOR_TESTING_HERE"]
+ele_email = ["EMAIL_FOR_TESTING_HERE"]
 toAddress_recipient = "Matt"
 send_date = date.today().strftime("%B %d, %Y")
 
@@ -186,7 +186,7 @@ def send_email(source_email, to_email, vendor, grouped_data, total):
         <body>
             <div class="container">
                 <div class="header+logo">
-                <div><img src="https://www.hatchwise.com/wp-content/uploads/2022/08/Amazon-Logo-2000-present-1024x576.jpeg" style="height:80px;" padding="20px">
+                <div><img src="PLACE_LOGO_HERE" style="height:80px;" padding="20px">
                 </div>
                 </div>
                 <div class="header">

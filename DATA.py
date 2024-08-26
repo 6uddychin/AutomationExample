@@ -19,11 +19,15 @@ send_date = date.today().strftime("%B %d, %Y")
 
 df = pd.read_csv(sys.argv[1])
 
-create_week= pd.to_datetime(df['create date'])
-df['opened_week'] = create_week.dt.isocalendar().week
+# SET VARIABLES
+wk_create= pd.to_datetime(df['create date'])
 wk_complete = pd.to_datetime(df['date completed'])
+
+# NEW COLUMNS
+df['week_created'] = wk_create.dt.isocalendar().week
 df['week_completed'] = wk_complete.dt.isocalendar().week
-print(df)
+
+
 df_open = df[~df['complete']]
 df_open['days_opens'] = (pd.to_datetime(today) -  pd.to_datetime(df_open['create date'])).dt.days
 df_completed = df[df['complete']]
